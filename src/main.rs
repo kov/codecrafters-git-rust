@@ -16,7 +16,7 @@ fn hash_to_filename(hash: &str) -> (DirName, FileName) {
     (&hash[..2], &hash[2..])
 }
 
-fn cat_object(object_id: &str) {
+fn read_object(object_id: &str) -> Vec<u8> {
     let (dir_name, file_name) = hash_to_filename(object_id);
 
     let mut path = PathBuf::from(".git/objects");
@@ -31,14 +31,68 @@ fn cat_object(object_id: &str) {
         panic!("Unable to open object file with id {object_id}");
     };
 
-    let mut blob = String::new();
-    if let Err(e) = ZlibDecoder::new(file).read_to_string(&mut blob) {
+    let mut blob = vec![];
+    if let Err(e) = ZlibDecoder::new(file).read_to_end(&mut blob) {
         panic!("Failed to decompress object file: {e}");
     }
 
+    blob
+}
+
+fn cat_object(object_id: &str) {
+    let blob =
+        String::from_utf8(read_object(object_id)).expect("file contents are not valid UTF-8");
     let size_end = blob.find('\0').expect("Malformed blob file");
     let contents = &blob.as_str()[size_end + 1..];
     print!("{contents}");
+}
+
+fn find_in_slice(haystack: &[u8], start_from: usize, needle: char) -> usize {
+    let mut look_ahead = start_from;
+    while haystack[look_ahead] as char != needle && look_ahead < haystack.len() {
+        look_ahead += 1;
+    }
+    look_ahead
+}
+
+fn ls_tree(object_id: &str) {
+    let blob = read_object(object_id);
+    let cursor = blob.as_slice();
+    let mut pos = 5;
+
+    // Skip header.
+    assert_eq!(str::from_utf8(&cursor[..pos]), Ok("tree "));
+
+    // Obtain length.
+    let look_ahead = find_in_slice(cursor, pos, '\0');
+
+    let size = str::from_utf8(&cursor[pos..look_ahead])
+        .expect("Expected file size, found non-utf8 value")
+        .parse::<usize>()
+        .expect("Invalid number reading tree object file size");
+
+    pos = look_ahead + 1; // Skip the \0.
+
+    assert_eq!(size, cursor.len() - pos);
+
+    while pos <= size {
+        // Skip mode.
+        pos = find_in_slice(cursor, pos, ' ');
+        pos += 1;
+
+        // Name.
+        let look_ahead = find_in_slice(cursor, pos, '\0');
+
+        let name = str::from_utf8(&cursor[pos..look_ahead])
+            .expect("Tree contains file with invalid utf-8 name");
+        println!("{name}");
+
+        // Skip the \0
+        pos = look_ahead + 1;
+
+        // Skip the 20-byte hash
+        pos += 20;
+    }
 }
 
 fn hash_object(path: &str) {
@@ -100,6 +154,10 @@ fn main() {
         "hash-object" => {
             assert_eq!(args[2].as_str(), "-w");
             hash_object(args[3].as_str());
+        }
+        "ls-tree" => {
+            assert_eq!(args[2].as_str(), "--name-only");
+            ls_tree(args[3].as_str());
         }
         _ => println!("unknown command: {}", args[1]),
     }
