@@ -100,6 +100,7 @@ fn ls_tree(object_id: &str) {
 enum ObjectKind {
     Blob,
     Tree,
+    Commit,
 }
 
 fn hash_contents(contents: &[u8], kind: ObjectKind) -> (GenericArray<u8, U20>, String, Vec<u8>) {
@@ -107,6 +108,7 @@ fn hash_contents(contents: &[u8], kind: ObjectKind) -> (GenericArray<u8, U20>, S
     let kind = match kind {
         ObjectKind::Blob => "blob",
         ObjectKind::Tree => "tree",
+        ObjectKind::Commit => "commit",
     };
 
     let mut blob = format!("{kind} {size}\0").into_bytes();
@@ -205,6 +207,19 @@ fn write_tree() {
     println!("{hash_str}");
 }
 
+fn commit_tree(tree_hash: &str, parent_hash: &str, message: &str) {
+    let mut contents = format!("tree {tree_hash}\nparent {parent_hash}\n");
+    contents.push_str("author Gustavo Noronha Silva <gustavo@noronha.dev.br> 1725324599 -0300\n");
+    contents
+        .push_str("committer Gustavo Noronha Silva <gustavo@noronha.dev.br> 1725324599 -0300\n");
+    contents.push('\n');
+    contents.push_str(message);
+    contents.push('\n');
+
+    let (_, hash_str) = write_hash_object(contents.as_bytes(), ObjectKind::Commit);
+    println!("{hash_str}");
+}
+
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     // println!("Logs from your program will appear here!");
@@ -233,6 +248,11 @@ fn main() {
         }
         "write-tree" => {
             write_tree();
+        }
+        "commit-tree" => {
+            assert_eq!(args[3].as_str(), "-p");
+            assert_eq!(args[5].as_str(), "-m");
+            commit_tree(args[2].as_str(), args[4].as_str(), args[6].as_str());
         }
         _ => println!("unknown command: {}", args[1]),
     }
