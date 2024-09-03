@@ -2,12 +2,14 @@ use core::str;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
+use sha1::digest::consts::U20;
+use sha1::digest::generic_array::GenericArray;
 use sha1::{Digest, Sha1};
 #[allow(unused_imports)]
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 type DirName<'a> = &'a str;
 type FileName<'a> = &'a str;
@@ -95,18 +97,30 @@ fn ls_tree(object_id: &str) {
     }
 }
 
-fn hash_object(path: &str) {
-    let path = PathBuf::from(path);
-    let contents = fs::read_to_string(&path).expect("Failed to open file to hash");
+enum ObjectKind {
+    Blob,
+    Tree,
+}
 
-    let size = contents.as_bytes().len();
-    let blob = format!("blob {size}\0{contents}");
+fn hash_contents(contents: &[u8], kind: ObjectKind) -> (GenericArray<u8, U20>, String, Vec<u8>) {
+    let size = contents.len();
+    let kind = match kind {
+        ObjectKind::Blob => "blob",
+        ObjectKind::Tree => "tree",
+    };
+
+    let mut blob = format!("{kind} {size}\0").into_bytes();
+    blob.extend_from_slice(contents);
 
     let mut hasher = Sha1::new();
-    hasher.update(blob.as_bytes());
+    hasher.update(&blob);
 
     let hash = hasher.finalize();
-    let hash_str = format!("{hash:x}");
+    (hash, format!("{hash:x}"), blob)
+}
+
+fn write_hash_object(contents: &[u8], kind: ObjectKind) -> (GenericArray<u8, U20>, String) {
+    let (hash, hash_str, blob) = hash_contents(contents, kind);
 
     let mut object_path = PathBuf::from(".git/objects");
 
@@ -127,9 +141,67 @@ fn hash_object(path: &str) {
     );
 
     object_file
-        .write_all(blob.as_bytes())
+        .write_all(&blob)
         .expect("Failed to write to object file");
 
+    (hash, hash_str)
+}
+
+fn hash_object(path: &str) {
+    let path = PathBuf::from(path);
+    let contents = fs::read_to_string(&path).expect("Failed to open file to hash");
+
+    let (_, hash_str) = write_hash_object(contents.as_bytes(), ObjectKind::Blob);
+    println!("{hash_str}");
+}
+
+fn do_write_tree(dir_path: &Path) -> (GenericArray<u8, U20>, String) {
+    let mut entries = vec![];
+
+    fs::read_dir(dir_path)
+        .expect("Failed to read current directory")
+        .for_each(|entry| {
+            let entry = entry.expect("Failed to read directory entry");
+            entries.push(entry.path());
+        });
+
+    // Tree objects expect alphabetical sorted entries.
+    entries.sort();
+
+    let mut contents: Vec<u8> = vec![];
+    for path in entries {
+        let name = path.file_name().unwrap().to_string_lossy();
+
+        if name == ".git" {
+            continue;
+        }
+
+        let hash = if path.is_dir() {
+            contents.extend(b"40000 ");
+
+            let (hash, _) = do_write_tree(&path);
+            hash
+        } else {
+            contents.extend(b"100644 ");
+
+            let mut file_contents = vec![];
+            fs::File::open(&path)
+                .expect("Failed to open file to hash")
+                .read_to_end(&mut file_contents)
+                .expect("Failed to read file to hash");
+            let (hash, _, _) = hash_contents(&file_contents, ObjectKind::Blob);
+            hash
+        };
+        contents.extend(name.as_bytes());
+        contents.push(b'\0');
+        contents.extend(hash);
+    }
+
+    write_hash_object(&contents, ObjectKind::Tree)
+}
+
+fn write_tree() {
+    let (_, hash_str) = do_write_tree(&PathBuf::from("."));
     println!("{hash_str}");
 }
 
@@ -158,6 +230,9 @@ fn main() {
         "ls-tree" => {
             assert_eq!(args[2].as_str(), "--name-only");
             ls_tree(args[3].as_str());
+        }
+        "write-tree" => {
+            write_tree();
         }
         _ => println!("unknown command: {}", args[1]),
     }
