@@ -33,7 +33,7 @@ fn hash_to_filename(hash: &str) -> (&str, &str) {
     (&hash[..2], &hash[2..])
 }
 
-#[derive(Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum ObjectKind {
     Blob,
     Tree,

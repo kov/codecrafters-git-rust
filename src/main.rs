@@ -1,17 +1,18 @@
 #![feature(concat_bytes)]
+use cat_file::DisplayMode;
 use core::str;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
-use object_store::ObjectId;
+use object_store::{ObjectId, ObjectKind};
 use sha1::digest::consts::U20;
 use sha1::digest::generic_array::GenericArray;
 use sha1::{Digest, Sha1};
-#[allow(unused_imports)]
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+mod cat_file;
 mod object_store;
 mod repository;
 
@@ -31,12 +32,6 @@ fn read_object(object_id: &str) -> Vec<u8> {
     }
 
     blob
-}
-
-fn cat_object(object_id: &str) {
-    let contents =
-        String::from_utf8(read_object(object_id)).expect("file contents are not valid UTF-8");
-    print!("{contents}");
 }
 
 fn find_in_slice(haystack: &[u8], start_from: usize, needle: char) -> usize {
@@ -72,18 +67,21 @@ fn ls_tree(object_id: &str) {
     }
 }
 
-enum ObjectKind {
+enum LegacyObjectKind {
     Blob,
     Tree,
     Commit,
 }
 
-fn hash_contents(contents: &[u8], kind: ObjectKind) -> (GenericArray<u8, U20>, String, Vec<u8>) {
+fn hash_contents(
+    contents: &[u8],
+    kind: LegacyObjectKind,
+) -> (GenericArray<u8, U20>, String, Vec<u8>) {
     let size = contents.len();
     let kind = match kind {
-        ObjectKind::Blob => "blob",
-        ObjectKind::Tree => "tree",
-        ObjectKind::Commit => "commit",
+        LegacyObjectKind::Blob => "blob",
+        LegacyObjectKind::Tree => "tree",
+        LegacyObjectKind::Commit => "commit",
     };
 
     let mut blob = format!("{kind} {size}\0").into_bytes();
@@ -96,7 +94,7 @@ fn hash_contents(contents: &[u8], kind: ObjectKind) -> (GenericArray<u8, U20>, S
     (hash, format!("{hash:x}"), blob)
 }
 
-fn write_hash_object(contents: &[u8], kind: ObjectKind) -> (GenericArray<u8, U20>, String) {
+fn write_hash_object(contents: &[u8], kind: LegacyObjectKind) -> (GenericArray<u8, U20>, String) {
     let (hash, hash_str, blob) = hash_contents(contents, kind);
 
     let mut object_path = PathBuf::from(".git/objects");
@@ -128,7 +126,7 @@ fn hash_object(path: &str) {
     let path = PathBuf::from(path);
     let contents = fs::read_to_string(&path).expect("Failed to open file to hash");
 
-    let (_, hash_str) = write_hash_object(contents.as_bytes(), ObjectKind::Blob);
+    let (_, hash_str) = write_hash_object(contents.as_bytes(), LegacyObjectKind::Blob);
     println!("{hash_str}");
 }
 
@@ -166,7 +164,7 @@ fn do_write_tree(dir_path: &Path) -> (GenericArray<u8, U20>, String) {
                 .expect("Failed to open file to hash")
                 .read_to_end(&mut file_contents)
                 .expect("Failed to read file to hash");
-            let (hash, _, _) = hash_contents(&file_contents, ObjectKind::Blob);
+            let (hash, _, _) = hash_contents(&file_contents, LegacyObjectKind::Blob);
             hash
         };
         contents.extend(name.as_bytes());
@@ -174,7 +172,7 @@ fn do_write_tree(dir_path: &Path) -> (GenericArray<u8, U20>, String) {
         contents.extend(hash);
     }
 
-    write_hash_object(&contents, ObjectKind::Tree)
+    write_hash_object(&contents, LegacyObjectKind::Tree)
 }
 
 fn write_tree() {
@@ -191,7 +189,7 @@ fn commit_tree(tree_hash: &str, parent_hash: &str, message: &str) {
     contents.push_str(message);
     contents.push('\n');
 
-    let (_, hash_str) = write_hash_object(contents.as_bytes(), ObjectKind::Commit);
+    let (_, hash_str) = write_hash_object(contents.as_bytes(), LegacyObjectKind::Commit);
     println!("{hash_str}");
 }
 
@@ -204,8 +202,22 @@ fn main() {
     match args[1].as_str() {
         "init" => repository::init(),
         "cat-file" => {
-            assert_eq!(args[2].as_str(), "-p");
-            cat_object(args[3].as_str());
+            let (display_mode, expected_kind) = if args[2].as_str() == "-p" {
+                (DisplayMode::PrettyPrint, None)
+            } else {
+                let expected_kind = match args[2].as_str() {
+                    "blob" => ObjectKind::Blob,
+                    "tree" => ObjectKind::Tree,
+                    "commit" => ObjectKind::Commit,
+                    unknown => panic!("unknown blob type {unknown}"),
+                };
+                (DisplayMode::Raw, Some(expected_kind))
+            };
+
+            if let Err(e) = cat_file::run(ObjectId::from_hex(&args[3]), expected_kind, display_mode)
+            {
+                eprintln!("fatal: cat-file: {e}");
+            }
         }
         "hash-object" => {
             assert_eq!(args[2].as_str(), "-w");
