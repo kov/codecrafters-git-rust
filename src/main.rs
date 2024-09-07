@@ -1,7 +1,8 @@
+#![feature(concat_bytes)]
 use core::str;
-use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
+use object_store::ObjectId;
 use sha1::digest::consts::U20;
 use sha1::digest::generic_array::GenericArray;
 use sha1::{Digest, Sha1};
@@ -11,6 +12,9 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+mod object_store;
+mod repository;
+
 type DirName<'a> = &'a str;
 type FileName<'a> = &'a str;
 
@@ -19,22 +23,10 @@ fn hash_to_filename(hash: &str) -> (DirName, FileName) {
 }
 
 fn read_object(object_id: &str) -> Vec<u8> {
-    let (dir_name, file_name) = hash_to_filename(object_id);
-
-    let mut path = PathBuf::from(".git/objects");
-    path.push(dir_name);
-
-    let Ok(_) = fs::exists(&path) else {
-        panic!("Object directory {dir_name} does not exist showing object {object_id}");
-    };
-
-    path.push(file_name);
-    let Ok(file) = fs::File::open(&path) else {
-        panic!("Unable to open object file with id {object_id}");
-    };
+    let mut object = object_store::read(ObjectId::from_hex(object_id)).unwrap();
 
     let mut blob = vec![];
-    if let Err(e) = ZlibDecoder::new(file).read_to_end(&mut blob) {
+    if let Err(e) = object.read_to_end(&mut blob) {
         panic!("Failed to decompress object file: {e}");
     }
 
@@ -42,10 +34,8 @@ fn read_object(object_id: &str) -> Vec<u8> {
 }
 
 fn cat_object(object_id: &str) {
-    let blob =
+    let contents =
         String::from_utf8(read_object(object_id)).expect("file contents are not valid UTF-8");
-    let size_end = blob.find('\0').expect("Malformed blob file");
-    let contents = &blob.as_str()[size_end + 1..];
     print!("{contents}");
 }
 
@@ -60,24 +50,9 @@ fn find_in_slice(haystack: &[u8], start_from: usize, needle: char) -> usize {
 fn ls_tree(object_id: &str) {
     let blob = read_object(object_id);
     let cursor = blob.as_slice();
-    let mut pos = 5;
+    let mut pos = 0;
 
-    // Skip header.
-    assert_eq!(str::from_utf8(&cursor[..pos]), Ok("tree "));
-
-    // Obtain length.
-    let look_ahead = find_in_slice(cursor, pos, '\0');
-
-    let size = str::from_utf8(&cursor[pos..look_ahead])
-        .expect("Expected file size, found non-utf8 value")
-        .parse::<usize>()
-        .expect("Invalid number reading tree object file size");
-
-    pos = look_ahead + 1; // Skip the \0.
-
-    assert_eq!(size, cursor.len() - pos);
-
-    while pos <= size {
+    while pos < blob.len() {
         // Skip mode.
         pos = find_in_slice(cursor, pos, ' ');
         pos += 1;
@@ -227,13 +202,7 @@ fn main() {
     // Uncomment this block to pass the first stage
     let args: Vec<String> = env::args().collect();
     match args[1].as_str() {
-        "init" => {
-            fs::create_dir(".git").unwrap();
-            fs::create_dir(".git/objects").unwrap();
-            fs::create_dir(".git/refs").unwrap();
-            fs::write(".git/HEAD", "ref: refs/heads/master\n").unwrap();
-            println!("Initialized git directory");
-        }
+        "init" => repository::init(),
         "cat-file" => {
             assert_eq!(args[2].as_str(), "-p");
             cat_object(args[3].as_str());
