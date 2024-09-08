@@ -1,10 +1,110 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use core::str;
 use flate2::read::ZlibDecoder;
 use std::fmt::Display;
 use std::io::{self, BufRead, BufReader, Read};
-use std::path::PathBuf;
-use std::{cmp, fs};
+use std::path::{Path, PathBuf};
+use std::{cmp, env, fs};
+
+#[cfg(not(test))]
+use std::os::unix::fs::MetadataExt;
+
+#[cfg(test)]
+use std::cell::RefCell;
+
+// This is so we can override path resolution for testing, so that we are able to run
+// more than one test in a row, as we do not need to rely on current working directory.
+#[cfg(test)]
+thread_local!(static TMPDIR: RefCell<PathBuf> = RefCell::new(PathBuf::from("/unset")));
+
+#[cfg(test)]
+fn path_from_git_root(subpath: impl AsRef<Path>) -> Result<PathBuf> {
+    let mut full_path = Default::default();
+    TMPDIR.with_borrow(|path| {
+        if path == &PathBuf::from("/unset") {
+            panic!("TMPDIR used before being set");
+        }
+
+        full_path = path.join(subpath.as_ref());
+    });
+
+    Ok(full_path)
+}
+
+#[cfg(not(test))]
+fn path_from_git_root(subpath: impl AsRef<Path>) -> Result<PathBuf> {
+    let mut candidate = env::current_dir()?;
+    let starting_device = candidate.metadata()?.dev();
+
+    let path = loop {
+        let path = candidate.join(".git");
+        if path.try_exists()? {
+            break Some(path);
+        }
+
+        if candidate.parent().is_none() {
+            break None;
+        }
+
+        candidate = candidate.parent().unwrap().to_owned();
+        if candidate.metadata()?.dev() != starting_device {
+            break None;
+        }
+    };
+
+    // We either found an existing .git we should use as our anchor, or
+    // we haven't, in which case we assume current directory.
+    match path {
+        Some(_) => Ok(candidate.join(subpath)),
+        None => Ok(env::current_dir()?.join(subpath.as_ref())),
+    }
+}
+
+// A wrapper for fs::create_dir() that automatically ignores errors for
+// the directory already existing. When running tests it will use
+// path_from_git_root() to allow overriding of working directory.
+#[inline]
+fn ensure_dir(path: &str) -> Result<()> {
+    // For tests we want to be able to override the path, but normally
+    // we must just use the current working directory.
+    #[cfg(test)]
+    let path = path_from_git_root(&path)?;
+
+    fs::create_dir(path).or_else(|e| {
+        if matches!(e.kind(), io::ErrorKind::AlreadyExists) {
+            Ok(())
+        } else {
+            Err(anyhow!(e))
+        }
+    })
+}
+
+#[inline]
+fn object_storage_path() -> Result<PathBuf> {
+    path_from_git_root(".git/objects")
+}
+
+pub fn init() -> Result<()> {
+    let is_reinit = fs::exists(".git")?;
+
+    ensure_dir(".git")?;
+    ensure_dir(".git/objects")?;
+    ensure_dir(".git/refs")?;
+
+    if is_reinit {
+        println!(
+            "Reinitialized existing Git repository in {}",
+            env::current_dir()?.display()
+        )
+    } else {
+        fs::write(".git/HEAD", "ref: refs/heads/main\n")?;
+        println!(
+            "Initialized empty Git repository in {}",
+            env::current_dir()?.display()
+        );
+    }
+    Ok(())
+}
 
 #[allow(unused)]
 pub struct ObjectId {
@@ -71,7 +171,7 @@ pub struct ObjectRead<R> {
 pub fn read(oid: ObjectId) -> Result<ObjectRead<impl BufRead>> {
     let (dir_name, file_name) = hash_to_filename(&oid.hex);
 
-    let mut path = PathBuf::from(".git/objects");
+    let mut path = object_storage_path()?;
     path.push(dir_name);
 
     fs::exists(&path).with_context(|| {
@@ -160,30 +260,30 @@ mod test {
     use flate2::write::ZlibEncoder;
     use flate2::Compression;
     use io::Write;
-    use std::sync::Mutex;
 
     use super::*;
-    use crate::repository;
     use temp_dir::TempDir;
-
-    // Unfortunately most of our functionality relies on the current working directory,
-    // so multiple threads causes tests to randomly fail.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn init_repo() -> TempDir {
         let tmp_dir =
             TempDir::with_prefix("gkgit-test-").expect("Failed to create temporary directory");
-        std::env::set_current_dir(tmp_dir.path()).expect("Failed to change current directory");
-        repository::init();
+
+        // Thread local storage used exclusively for testing.
+        let tmp_path = tmp_dir.path().to_owned();
+        TMPDIR.with_borrow_mut(|p| *p = tmp_path);
+
+        super::init().expect("Failed to initialize repository");
         tmp_dir
     }
 
     fn write_blob_file(dir: &str, file: &str, bytes: &[u8]) {
-        fs::create_dir(format!(".git/objects/{dir}")).expect("Failed to create directory");
+        let tmpdir = path_from_git_root(".").expect("Failed getting path for git root");
+        fs::create_dir(tmpdir.join(format!(".git/objects/{dir}")))
+            .expect("Failed to create directory");
         let mut file = fs::OpenOptions::new()
             .create(true)
             .write(true)
-            .open(format!(".git/objects/{dir}/{file}"))
+            .open(tmpdir.join(format!(".git/objects/{dir}/{file}")))
             .expect("Failed to create blob file");
         file.write_all(bytes).expect("Failed to write blob file");
     }
@@ -209,8 +309,6 @@ mod test {
 
     #[test]
     fn test_read_tree() {
-        let _guard = TEST_LOCK.lock();
-
         let _tmp_dir = init_repo();
 
         write_2b_tree();
@@ -242,8 +340,6 @@ mod test {
 
     #[test]
     fn test_read_tree_larger() {
-        let _guard = TEST_LOCK.lock();
-
         let _tmp_dir = init_repo();
 
         // Write a tree object whose content goes beyond the expected size declared

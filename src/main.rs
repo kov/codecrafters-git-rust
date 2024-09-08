@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 
 mod cat_file;
 mod object_store;
-mod repository;
 
 type DirName<'a> = &'a str;
 type FileName<'a> = &'a str;
@@ -259,7 +258,7 @@ fn main() -> Result<()> {
     // Uncomment this block to pass the first stage
     let args = Args::parse();
     match args.command {
-        Command::Init => repository::init(),
+        Command::Init => object_store::init(),
         Command::CatFile {
             pretty_print,
             type_only,
