@@ -82,7 +82,7 @@ pub fn run(
     let size = object.size;
     if let Some(expected_kind) = expected_kind {
         if !(kind == expected_kind) {
-            bail!("fatal: object file exists, but is not a {expected_kind:#?}");
+            bail!("fatal: object file exists, but is not a {expected_kind}");
         }
     }
 

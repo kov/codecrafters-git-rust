@@ -1,5 +1,7 @@
 #![feature(concat_bytes)]
+use anyhow::{bail, Context, Result};
 use cat_file::DisplayMode;
+use clap::{ArgGroup, Parser, Subcommand};
 use core::str;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -7,7 +9,6 @@ use object_store::{ObjectId, ObjectKind};
 use sha1::digest::consts::U20;
 use sha1::digest::generic_array::GenericArray;
 use sha1::{Digest, Sha1};
-use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -42,7 +43,7 @@ fn find_in_slice(haystack: &[u8], start_from: usize, needle: char) -> usize {
     look_ahead
 }
 
-fn ls_tree(object_id: &str) {
+fn ls_tree(object_id: &str) -> Result<()> {
     let blob = read_object(object_id);
     let cursor = blob.as_slice();
     let mut pos = 0;
@@ -56,7 +57,7 @@ fn ls_tree(object_id: &str) {
         let look_ahead = find_in_slice(cursor, pos, '\0');
 
         let name = str::from_utf8(&cursor[pos..look_ahead])
-            .expect("Tree contains file with invalid utf-8 name");
+            .context("tree contains file with invalid utf-8 name")?;
         println!("{name}");
 
         // Skip the \0
@@ -65,6 +66,8 @@ fn ls_tree(object_id: &str) {
         // Skip the 20-byte hash
         pos += 20;
     }
+
+    Ok(())
 }
 
 enum LegacyObjectKind {
@@ -122,12 +125,12 @@ fn write_hash_object(contents: &[u8], kind: LegacyObjectKind) -> (GenericArray<u
     (hash, hash_str)
 }
 
-fn hash_object(path: &str) {
-    let path = PathBuf::from(path);
-    let contents = fs::read_to_string(&path).expect("Failed to open file to hash");
+fn hash_object(path: &Path) -> Result<()> {
+    let contents = fs::read_to_string(&path).with_context(|| "reading from '{path}' to hash")?;
 
     let (_, hash_str) = write_hash_object(contents.as_bytes(), LegacyObjectKind::Blob);
     println!("{hash_str}");
+    Ok(())
 }
 
 fn do_write_tree(dir_path: &Path) -> (GenericArray<u8, U20>, String) {
@@ -175,12 +178,13 @@ fn do_write_tree(dir_path: &Path) -> (GenericArray<u8, U20>, String) {
     write_hash_object(&contents, LegacyObjectKind::Tree)
 }
 
-fn write_tree() {
+fn write_tree() -> Result<()> {
     let (_, hash_str) = do_write_tree(&PathBuf::from("."));
     println!("{hash_str}");
+    Ok(())
 }
 
-fn commit_tree(tree_hash: &str, parent_hash: &str, message: &str) {
+fn commit_tree(tree_hash: &str, parent_hash: &str, message: &str) -> Result<()> {
     let mut contents = format!("tree {tree_hash}\nparent {parent_hash}\n");
     contents.push_str("author Gustavo Noronha Silva <gustavo@noronha.dev.br> 1725324599 -0300\n");
     contents
@@ -191,54 +195,118 @@ fn commit_tree(tree_hash: &str, parent_hash: &str, message: &str) {
 
     let (_, hash_str) = write_hash_object(contents.as_bytes(), LegacyObjectKind::Commit);
     println!("{hash_str}");
+    Ok(())
 }
 
-fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    // println!("Logs from your program will appear here!");
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[command(subcommand)]
+    command: Command,
+}
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    Init,
+
+    #[command(
+        group = ArgGroup::new("display_mode")
+        .args(&["pretty_print", "type_only", "size_only"])
+    )]
+    CatFile {
+        #[clap(short = 'p')]
+        pretty_print: bool,
+
+        #[clap(short = 't')]
+        type_only: bool,
+
+        #[clap(short = 's')]
+        size_only: bool,
+
+        // kind must be provided if none of the short options above are
+        first: Option<String>,
+        second: Option<String>,
+    },
+
+    HashObject {
+        #[clap(short = 'w')]
+        write: bool,
+
+        path: PathBuf,
+    },
+
+    LsTree {
+        #[clap(long = "name-only")]
+        name_only: bool,
+
+        hash: String,
+    },
+
+    WriteTree,
+
+    CommitTree {
+        #[clap(short = 'p')]
+        parent: String,
+
+        #[clap(short = 'm')]
+        message: String,
+
+        hash: String,
+    },
+}
+
+fn main() -> Result<()> {
     // Uncomment this block to pass the first stage
-    let args: Vec<String> = env::args().collect();
-    match args[1].as_str() {
-        "init" => repository::init(),
-        "cat-file" => {
-            let (display_mode, expected_kind) = if args[2].as_str() == "-p" {
-                (DisplayMode::PrettyPrint, None)
-            } else if args[2].as_str() == "-t" {
-                (DisplayMode::Type, None)
-            } else if args[2].as_str() == "-s" {
-                (DisplayMode::Size, None)
+    let args = Args::parse();
+    match args.command {
+        Command::Init => repository::init(),
+        Command::CatFile {
+            pretty_print,
+            type_only,
+            size_only,
+            first,
+            second,
+        } => {
+            let (expected_kind, hex) = if pretty_print || type_only || size_only {
+                let (Some(hex), None) = (first, second) else {
+                    bail!("hash must be provided when one of -p, -s or -t are")
+                };
+                (None, hex)
             } else {
-                let expected_kind = match args[2].as_str() {
+                let (Some(kind), Some(hex)) = (first, second) else {
+                    bail!("kind and hex must be provided when none of -p, -s or -t are")
+                };
+                (Some(kind), hex)
+            };
+
+            let display_mode = if pretty_print {
+                DisplayMode::PrettyPrint
+            } else if type_only {
+                DisplayMode::Type
+            } else if size_only {
+                DisplayMode::Size
+            } else {
+                DisplayMode::Raw
+            };
+
+            cat_file::run(
+                ObjectId::from_hex(hex),
+                expected_kind.map(|kind| match kind.as_str() {
                     "blob" => ObjectKind::Blob,
                     "tree" => ObjectKind::Tree,
                     "commit" => ObjectKind::Commit,
                     unknown => panic!("unknown blob type {unknown}"),
-                };
-                (DisplayMode::Raw, Some(expected_kind))
-            };
-
-            if let Err(e) = cat_file::run(ObjectId::from_hex(&args[3]), expected_kind, display_mode)
-            {
-                eprintln!("fatal: cat-file: {e}");
-            }
+                }),
+                display_mode,
+            )
         }
-        "hash-object" => {
-            assert_eq!(args[2].as_str(), "-w");
-            hash_object(args[3].as_str());
-        }
-        "ls-tree" => {
-            assert_eq!(args[2].as_str(), "--name-only");
-            ls_tree(args[3].as_str());
-        }
-        "write-tree" => {
-            write_tree();
-        }
-        "commit-tree" => {
-            assert_eq!(args[3].as_str(), "-p");
-            assert_eq!(args[5].as_str(), "-m");
-            commit_tree(args[2].as_str(), args[4].as_str(), args[6].as_str());
-        }
-        _ => println!("unknown command: {}", args[1]),
+        Command::HashObject { write: _, path } => hash_object(&path),
+        Command::LsTree { name_only: _, hash } => ls_tree(&hash),
+        Command::WriteTree => write_tree(),
+        Command::CommitTree {
+            parent,
+            message,
+            hash,
+        } => commit_tree(&hash, &parent, &message),
     }
 }

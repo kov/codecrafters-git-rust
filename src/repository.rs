@@ -1,9 +1,11 @@
+use anyhow::Result;
 use std::fs;
 
-pub fn init() {
-    fs::create_dir(".git").unwrap();
-    fs::create_dir(".git/objects").unwrap();
-    fs::create_dir(".git/refs").unwrap();
-    fs::write(".git/HEAD", "ref: refs/heads/master\n").unwrap();
+pub fn init() -> Result<()> {
+    fs::create_dir(".git")?;
+    fs::create_dir(".git/objects")?;
+    fs::create_dir(".git/refs")?;
+    fs::write(".git/HEAD", "ref: refs/heads/master\n")?;
     println!("Initialized git directory");
+    Ok(())
 }
