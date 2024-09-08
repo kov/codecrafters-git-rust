@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use core::str;
 use flate2::read::ZlibDecoder;
+use std::fmt::Display;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::{cmp, fs};
@@ -40,12 +41,23 @@ pub enum ObjectKind {
     Commit,
 }
 
+impl Display for ObjectKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ObjectKind::Blob => "blob",
+            ObjectKind::Tree => "tree",
+            ObjectKind::Commit => "commit",
+        };
+        write!(f, "{s}")
+    }
+}
+
 #[allow(unused)]
 pub struct ObjectRead<R> {
     pub oid: ObjectId,
     pub kind: ObjectKind,
+    pub size: usize,
 
-    size: usize,
     read: usize,
     reader: R,
 }

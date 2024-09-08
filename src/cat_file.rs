@@ -9,6 +9,8 @@ use anyhow::{bail, Context, Result};
 
 pub enum DisplayMode {
     Raw,
+    Type,
+    Size,
     PrettyPrint,
 }
 
@@ -77,6 +79,7 @@ pub fn run(
 ) -> Result<()> {
     let object = object_store::read(oid)?;
     let kind = object.kind.clone();
+    let size = object.size;
     if let Some(expected_kind) = expected_kind {
         if !(kind == expected_kind) {
             bail!("fatal: object file exists, but is not a {expected_kind:#?}");
@@ -86,6 +89,14 @@ pub fn run(
     let mut reader = BufReader::new(object);
     match display_mode {
         DisplayMode::Raw => print_raw(&mut reader),
+        DisplayMode::Size => {
+            println!("{}", size);
+            Ok(())
+        }
+        DisplayMode::Type => {
+            println!("{}", kind);
+            Ok(())
+        }
         DisplayMode::PrettyPrint => match kind {
             ObjectKind::Blob => print_raw(&mut reader),
             ObjectKind::Tree => print_tree(&mut reader),

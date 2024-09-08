@@ -204,6 +204,10 @@ fn main() {
         "cat-file" => {
             let (display_mode, expected_kind) = if args[2].as_str() == "-p" {
                 (DisplayMode::PrettyPrint, None)
+            } else if args[2].as_str() == "-t" {
+                (DisplayMode::Type, None)
+            } else if args[2].as_str() == "-s" {
+                (DisplayMode::Size, None)
             } else {
                 let expected_kind = match args[2].as_str() {
                     "blob" => ObjectKind::Blob,
