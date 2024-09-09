@@ -17,6 +17,9 @@ mod cat_file;
 mod hash_object;
 mod object_store;
 
+#[cfg(test)]
+mod test;
+
 type DirName<'a> = &'a str;
 type FileName<'a> = &'a str;
 
@@ -292,7 +295,11 @@ fn main() -> Result<()> {
                 display_mode,
             )
         }
-        Command::HashObject { write, path } => hash_object::run(&path, write),
+        Command::HashObject { write, path } => {
+            let oid = hash_object::run(&path, write)?;
+            println!("{}", oid.hex);
+            Ok(())
+        }
         Command::LsTree { name_only: _, hash } => ls_tree(&hash),
         Command::WriteTree => write_tree(),
         Command::CommitTree {

@@ -1,9 +1,9 @@
 use std::{fs, io, os::unix::fs::MetadataExt, path::Path};
 
-use crate::object_store::{self, ObjectKind};
+use crate::object_store::{self, ObjectId, ObjectKind};
 use anyhow::{Context, Result};
 
-pub fn run(path: impl AsRef<Path>, should_write: bool) -> Result<()> {
+pub fn run(path: impl AsRef<Path>, should_write: bool) -> Result<ObjectId> {
     let reader = fs::File::open(path)?;
     let size = reader.metadata()?.size();
 
@@ -27,10 +27,8 @@ pub fn run(path: impl AsRef<Path>, should_write: bool) -> Result<()> {
 
         tmp.leak();
 
-        println!("{}", oid.hex);
+        Ok(oid)
     } else {
-        let oid = object_store::write(reader, size as usize, ObjectKind::Blob, io::sink())?;
-        println!("{}", oid.hex);
+        object_store::write(reader, size as usize, ObjectKind::Blob, io::sink())
     }
-    Ok(())
 }

@@ -22,7 +22,7 @@ use std::cell::RefCell;
 thread_local!(static TMPDIR: RefCell<PathBuf> = RefCell::new(PathBuf::from("/unset")));
 
 #[cfg(test)]
-fn path_from_git_root(subpath: impl AsRef<Path>) -> Result<PathBuf> {
+pub fn path_from_git_root(subpath: impl AsRef<Path>) -> Result<PathBuf> {
     let mut full_path = Default::default();
     TMPDIR.with_borrow(|path| {
         if path == &PathBuf::from("/unset") {
@@ -306,15 +306,13 @@ pub fn write(
 }
 
 #[cfg(test)]
-mod test {
-    use flate2::write::ZlibEncoder;
-    use flate2::Compression;
+pub mod test {
     use io::Write;
-
-    use super::*;
     use temp_dir::TempDir;
 
-    fn init_repo() -> TempDir {
+    use super::*;
+
+    pub fn init_repo() -> TempDir {
         let tmp_dir =
             TempDir::with_prefix("gkgit-test-").expect("Failed to create temporary directory");
 
@@ -326,7 +324,7 @@ mod test {
         tmp_dir
     }
 
-    fn write_blob_file(dir: &str, file: &str, bytes: &[u8]) {
+    pub fn write_blob_file(dir: &str, file: &str, bytes: &[u8]) {
         let tmpdir = path_from_git_root(".").expect("Failed getting path for git root");
         fs::create_dir(tmpdir.join(format!(".git/objects/{dir}")))
             .expect("Failed to create directory");
@@ -336,83 +334,5 @@ mod test {
             .open(tmpdir.join(format!(".git/objects/{dir}/{file}")))
             .expect("Failed to create blob file");
         file.write_all(bytes).expect("Failed to write blob file");
-    }
-
-    fn write_2b_tree() {
-        let blob = include_bytes!("test-files/2b/297e643c551e76cfa1f93810c50811382f9117");
-        write_blob_file("2b", "297e643c551e76cfa1f93810c50811382f9117", &blob[..]);
-    }
-
-    #[test]
-    fn test_objectid() {
-        let bytes = [
-            43, 41, 126, 100, 60, 85, 30, 118, 207, 161, 249, 56, 16, 197, 8, 17, 56, 47, 145, 23,
-        ];
-        let hex = "2b297e643c551e76cfa1f93810c50811382f9117";
-
-        let oid = ObjectId::from_bytes(bytes.clone());
-        assert_eq!(oid.hex, hex);
-
-        let oid = ObjectId::from_hex(hex.to_string());
-        assert_eq!(oid.hash, bytes);
-    }
-
-    #[test]
-    fn test_read_tree() {
-        let _tmp_dir = init_repo();
-
-        write_2b_tree();
-
-        let mut oread = read(ObjectId::from_hex(
-            "2b297e643c551e76cfa1f93810c50811382f9117",
-        ))
-        .expect("Unable to read test object tree");
-
-        assert_eq!(oread.oid.hex, "2b297e643c551e76cfa1f93810c50811382f9117");
-        assert!(matches!(oread.kind, ObjectKind::Tree));
-
-        let mut buf = vec![];
-        oread
-            .read_to_end(&mut buf)
-            .expect("Reading contents of the tree blob file");
-
-        assert_eq!(
-            &buf,
-            &concat_bytes!(
-                b"100644 test.txt\0",
-                [
-                    157, 174, 175, 185, 134, 76, 244, 48, 85, 174, 147, 190, 176, 175, 214, 199,
-                    209, 68, 191, 164,
-                ]
-            )
-        );
-    }
-
-    #[test]
-    fn test_read_tree_larger() {
-        let _tmp_dir = init_repo();
-
-        // Write a tree object whose content goes beyond the expected size declared
-        // on the header.
-        let mut contents = ZlibEncoder::new(vec![], Compression::default());
-        contents.write_all(b"tree 36\0").expect("Writing test data");
-        contents
-            .write_all(str::repeat("-", 40).as_bytes())
-            .expect("Writing test data");
-        let contents = contents.finish().expect("Failed to compress test data");
-
-        write_blob_file("2b", "297e643c551e76cfa1f93810c50811382f9117", &contents);
-
-        let mut oread = read(ObjectId::from_hex(
-            "2b297e643c551e76cfa1f93810c50811382f9117",
-        ))
-        .expect("Unable to read test object tree");
-
-        let mut buf = vec![];
-        let Err(err) = oread.read_to_end(&mut buf) else {
-            panic!("Expected read to fail, but it succeeded.");
-        };
-
-        assert!(matches!(err.kind(), io::ErrorKind::Other));
     }
 }
