@@ -14,6 +14,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 mod cat_file;
+mod hash_object;
 mod object_store;
 
 type DirName<'a> = &'a str;
@@ -122,14 +123,6 @@ fn write_hash_object(contents: &[u8], kind: LegacyObjectKind) -> (GenericArray<u
         .expect("Failed to write to object file");
 
     (hash, hash_str)
-}
-
-fn hash_object(path: &Path) -> Result<()> {
-    let contents = fs::read_to_string(&path).with_context(|| "reading from '{path}' to hash")?;
-
-    let (_, hash_str) = write_hash_object(contents.as_bytes(), LegacyObjectKind::Blob);
-    println!("{hash_str}");
-    Ok(())
 }
 
 fn do_write_tree(dir_path: &Path) -> (GenericArray<u8, U20>, String) {
@@ -299,7 +292,7 @@ fn main() -> Result<()> {
                 display_mode,
             )
         }
-        Command::HashObject { write: _, path } => hash_object(&path),
+        Command::HashObject { write, path } => hash_object::run(&path, write),
         Command::LsTree { name_only: _, hash } => ls_tree(&hash),
         Command::WriteTree => write_tree(),
         Command::CommitTree {

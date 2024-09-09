@@ -1,10 +1,14 @@
 use anyhow::{anyhow, bail, Context, Result};
 use core::str;
 use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
+use sha1::{Digest, Sha1};
 use std::fmt::Display;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::{cmp, env, fs};
+use temp_file::{TempFile, TempFileBuilder};
 
 #[cfg(not(test))]
 use std::os::unix::fs::MetadataExt;
@@ -108,8 +112,8 @@ pub fn init() -> Result<()> {
 
 #[allow(unused)]
 pub struct ObjectId {
-    hash: [u8; 20],
-    hex: String,
+    pub hash: [u8; 20],
+    pub hex: String,
 }
 
 #[allow(unused)]
@@ -253,6 +257,52 @@ impl<R: BufRead> Read for ObjectRead<R> {
             })
         }
     }
+}
+
+pub fn temp_file() -> Result<TempFile> {
+    let path = path_from_git_root(".git/objects")?;
+    TempFileBuilder::new()
+        .in_dir(&path)
+        .prefix("gkgit")
+        .build()
+        .with_context(|| format!("creating temporary file in {}", path.display()))
+}
+
+pub fn path_for_object(oid: &ObjectId) -> Result<PathBuf> {
+    let dir = &oid.hex[..2];
+    ensure_dir(&format!(".git/objects/{dir}"))?;
+
+    let filename = &oid.hex[2..];
+    path_from_git_root(format!(".git/objects/{dir}/{filename}"))
+}
+
+pub fn write(
+    mut reader: impl Read,
+    size: usize,
+    kind: ObjectKind,
+    writer: impl Write,
+) -> Result<ObjectId> {
+    let mut hasher = Sha1::new();
+    let mut writer = ZlibEncoder::new(writer, Compression::default());
+
+    let header = format!("{kind} {size}\0").into_bytes();
+    hasher.update(&header);
+
+    writer.write_all(&header).context("writing header")?;
+
+    let mut buf = [0; 4096];
+    loop {
+        let n = reader
+            .read(&mut buf[..])
+            .context("reading for hashing object")?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        writer.write_all(&buf[..n]).context("writing to object")?;
+    }
+
+    Ok(ObjectId::from_bytes(hasher.finalize().into()))
 }
 
 #[cfg(test)]

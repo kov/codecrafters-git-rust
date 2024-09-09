@@ -29,3 +29,4 @@ hex = "0.4.3"                                                      # working wit
 anyhow = "1.0.59"                                                  # error handling
 thiserror = "1.0.32"                                               # error handling
 temp-dir = "0.1"
+temp-file = "0.1.8"
